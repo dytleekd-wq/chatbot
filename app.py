@@ -24,6 +24,11 @@ DATA_DIR = PROJECT_ROOT / "DATA"
 # 코사인 유사도가 이 값보다 낮으면 문서와 관련 없는 질문으로 판단합니다.
 # InMemoryVectorStore의 검색 점수는 1에 가까울수록 유사합니다.
 MIN_RELEVANCE_SCORE = 0.48
+# 답변 신뢰도는 검색 결과 중 가장 높은 코사인 유사도로 계산합니다.
+# 0.65 이상은 질문과 문서가 매우 가깝고, 0.55 이상은 관련 문서가 있으나
+# 표현 차이가 있을 수 있는 구간입니다. 0.55 미만은 근거가 약한 '낮음'입니다.
+HIGH_CONFIDENCE_SCORE = 0.65
+MEDIUM_CONFIDENCE_SCORE = 0.55
 EXAMPLE_QUESTIONS = [
     "근무지 외 국내출장 시 지급되는 여비 항목은 무엇인가요?",
     "서울 거주·세종 근무자가 서울에서 대구로 바로 출장 가면 운임은 어떻게 지급되나요?",
@@ -93,6 +98,27 @@ def evidence_sentence(text: str, limit: int = 500) -> str:
     sentences = [part.strip() for part in re.split(r"(?<=[.!?。！？])\s+", text) if part.strip()]
     evidence = " ".join(sentences[:2]) if sentences else text.strip()
     return evidence[:limit] + ("…" if len(evidence) > limit else "")
+
+
+def assess_confidence(scored_documents: list[tuple[Document, float]]) -> tuple[str, float]:
+    """최신 InMemoryVectorStore의 유사도 점수로 답변 신뢰도를 분류합니다."""
+    # similarity_search_with_score()는 점수가 높은 순서로 결과를 반환합니다.
+    top_score = scored_documents[0][1] if scored_documents else 0.0
+    if top_score >= HIGH_CONFIDENCE_SCORE:
+        return "높음", top_score
+    if top_score >= MEDIUM_CONFIDENCE_SCORE:
+        return "보통", top_score
+    return "낮음", top_score
+
+
+def show_confidence(confidence: str, score: float) -> None:
+    """답변 옆에 검색 기반 신뢰도와 필요한 주의 문구를 표시합니다."""
+    st.caption(f"답변 신뢰도: **{confidence}** · 최고 검색 유사도: {score:.2f}")
+    if confidence == "낮음":
+        st.warning(
+            "검색 유사도가 낮아 질문과 직접적으로 맞는 문서 근거를 찾기 어렵습니다. "
+            "답변은 참고용으로만 확인하고, 질문 조건을 더 구체적으로 입력해 주세요."
+        )
 
 
 def configure_openai_api_key() -> bool:
@@ -217,6 +243,8 @@ def main() -> None:
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
+            if message["role"] == "assistant" and message.get("confidence"):
+                show_confidence(message["confidence"], message["similarity_score"])
             if message["role"] == "assistant" and message.get("sources"):
                 st.markdown("**출처 및 근거**")
                 for source in message["sources"]:
@@ -262,7 +290,9 @@ def main() -> None:
                 {"chat_history": chat_history, "question": question}
             )
             # 항상 결과를 반환하는 retriever 대신, 유사도 점수를 확인해 관련 문서만 사용합니다.
+            # InMemoryVectorStore 최신 API는 (Document, cosine_similarity) 쌍을 반환합니다.
             scored_documents = vector_store.similarity_search_with_score(search_query, k=8)
+            confidence, top_score = assess_confidence(scored_documents)
             relevant_documents = [
                 document
                 for document, score in scored_documents
@@ -283,6 +313,7 @@ def main() -> None:
                 answer = "문서에서 확인할 수 없습니다."
                 relevant_documents = []
         st.markdown(answer)
+        show_confidence(confidence, top_score)
 
         seen: set[tuple[str, int]] = set()
         sources: list[dict[str, Any]] = []
@@ -301,7 +332,13 @@ def main() -> None:
 
         # 답변과 출처를 함께 저장해 다음 화면 갱신에도 대화를 유지합니다.
         st.session_state.messages.append(
-            {"role": "assistant", "content": answer, "sources": sources}
+            {
+                "role": "assistant",
+                "content": answer,
+                "sources": sources,
+                "confidence": confidence,
+                "similarity_score": top_score,
+            }
         )
 
 
