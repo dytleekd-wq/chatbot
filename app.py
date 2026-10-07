@@ -24,6 +24,13 @@ DATA_DIR = PROJECT_ROOT / "DATA"
 # 코사인 유사도가 이 값보다 낮으면 문서와 관련 없는 질문으로 판단합니다.
 # InMemoryVectorStore의 검색 점수는 1에 가까울수록 유사합니다.
 MIN_RELEVANCE_SCORE = 0.48
+EXAMPLE_QUESTIONS = [
+    "근무지 외 국내출장 시 지급되는 여비 항목은 무엇인가요?",
+    "서울 거주·세종 근무자가 서울에서 대구로 바로 출장 가면 운임은 어떻게 지급되나요?",
+    "제주 2박 3일 출장에서 숙박비가 5만2천원, 4만7천원이면 얼마를 받을 수 있나요?",
+    "근무지 외 국내출장의 숙박비 지급 기준은 어떻게 되나요?",
+    "공용차량을 이용한 근무지 내 출장의 여비는 어떻게 되나요?",
+]
 
 
 def read_pdf_documents() -> list[Document]:
@@ -106,6 +113,11 @@ def configure_openai_api_key() -> bool:
         os.environ["OPENAI_API_KEY"] = str(api_key)
         return True
     return False
+
+
+def select_example_question(question: str) -> None:
+    """예시 버튼의 질문을 다음 채팅 처리 흐름으로 전달합니다."""
+    st.session_state.pending_question = question
 
 
 @st.cache_resource(show_spinner="문서를 읽고 벡터 DB를 준비하는 중입니다...")
@@ -212,10 +224,29 @@ def main() -> None:
                         f"- `{source['file']}` p.{source['page']}: {source['evidence']}"
                     )
 
-    question = st.chat_input("문서에 대해 궁금한 내용을 질문하세요.")
+    # 첫 화면에서는 사용 방법과 문서 범위에 맞는 예시 질문을 제공합니다.
+    if not st.session_state.messages:
+        st.subheader("사용 안내")
+        st.markdown(
+            "1. 아래 예시 질문을 누르거나 직접 질문을 입력하세요.\n"
+            "2. 챗봇은 `DATA` 폴더의 공무원 여비 문서만 검색해 답변합니다.\n"
+            "3. 정확한 금액 계산에는 직급, 교통수단, 실제 지출액 등 추가 정보가 필요할 수 있습니다."
+        )
+        st.caption("예시 질문을 누르면 바로 답변을 생성합니다.")
+        for index, example_question in enumerate(EXAMPLE_QUESTIONS, start=1):
+            st.button(
+                example_question,
+                key=f"example_question_{index}",
+                on_click=select_example_question,
+                args=(example_question,),
+                use_container_width=True,
+            )
+
+    # 버튼으로 선택한 질문과 직접 입력한 질문을 동일한 처리 흐름으로 연결합니다.
+    selected_question = st.session_state.pop("pending_question", None)
+    typed_question = st.chat_input("문서에 대해 궁금한 내용을 질문하세요.")
+    question = selected_question or typed_question
     if not question:
-        if not st.session_state.messages:
-            st.info("예: 출장 여비 지급 기준은 어떻게 되나요?")
         return
 
     # 새 질문을 저장하기 전의 대화만 사용해야 현재 질문이 중복되지 않습니다.
